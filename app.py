@@ -1,101 +1,107 @@
-import cv2
 import streamlit as st
+import cv2
 import numpy as np
+import pandas as pd
+import torch
+import os
+import sys
+
+# Instalar EasyOCR automáticamente si no está presente
+os.system("pip install easyocr==1.7.1 torch torchvision --quiet")
+
 import easyocr
 
 # Configuración de la página
 st.set_page_config(
-    page_title="Analizador de Placas (Inglés)",
+    page_title="Reconocimiento de Placas Vehiculares",
     page_icon="🚗",
     layout="wide"
 )
 
-# --- ESTILO VISUAL ---
+st.title("🚗 Reconocimiento de Placas Vehiculares")
 st.markdown("""
-    <style>
-        body {
-            background-color: #1a1a1a;
-            color: #f1f1f1;
-        }
-        .main {
-            background-color: #1a1a1a;
-        }
-        .title {
-            text-align: center;
-            color: #FFD60A;
-            font-size: 2.5em;
-            font-weight: bold;
-            margin-bottom: 0.3em;
-        }
-        .subtitle {
-            text-align: center;
-            color: #ccc;
-            font-size: 1.1em;
-            margin-bottom: 1.5em;
-        }
-        .stButton > button {
-            background-color: #FFD60A;
-            color: #1a1a1a;
-            border: none;
-            border-radius: 8px;
-            font-weight: bold;
-        }
-        .stButton > button:hover {
-            background-color: #ffdf40;
-        }
-        h3, h2 {
-            color: #FFD60A;
-        }
-    </style>
-""", unsafe_allow_html=True)
+Esta aplicación utiliza **YOLOv5** para detectar vehículos y **EasyOCR** para reconocer texto en las placas.  
+Puedes capturar una imagen con tu cámara o subir una foto de un automóvil.
+""")
 
-# --- TÍTULO Y DESCRIPCIÓN ---
-st.markdown("<div class='title'>Analizador de Placas</div>", unsafe_allow_html=True)
-st.markdown("<div class='subtitle'>Captura una imagen y el sistema reconocerá la placa del vehículo usando inteligencia artificial.</div>", unsafe_allow_html=True)
-
-# --- CARGA DEL MODELO OCR ---
+# Cargar modelo YOLOv5
 @st.cache_resource
-def load_ocr_model():
-    return easyocr.Reader(['en', 'es'])  # Reconoce en inglés y español
+def load_yolov5_model():
+    try:
+        import yolov5
+        model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True)
+        return model
+    except Exception as e:
+        st.error(f"Error al cargar YOLOv5: {str(e)}")
+        return None
 
-reader = load_ocr_model()
+with st.spinner("Cargando modelo YOLOv5..."):
+    model = load_yolov5_model()
 
-# --- CAPTURA DE IMAGEN ---
-st.markdown("### 📸 Captura o sube una imagen del vehículo")
-option = st.radio("Selecciona el método de entrada:", ("Tomar foto", "Subir imagen"))
+# Cargar OCR
+reader = easyocr.Reader(['en'])
 
-if option == "Tomar foto":
-    picture = st.camera_input("Usa la cámara para tomar la foto")
+st.sidebar.title("⚙️ Configuración de detección")
+conf = st.sidebar.slider("Nivel de confianza mínimo", 0.0, 1.0, 0.25, 0.01)
+iou = st.sidebar.slider("Umbral IoU", 0.0, 1.0, 0.45, 0.01)
+
+st.sidebar.markdown("---")
+upload_option = st.sidebar.radio("📸 Fuente de imagen", ["Usar cámara", "Subir imagen"])
+
+# Captura o carga de imagen
+if upload_option == "Usar cámara":
+    picture = st.camera_input("Captura una foto del vehículo")
 else:
     picture = st.file_uploader("Sube una imagen del vehículo", type=["jpg", "jpeg", "png"])
 
-# --- PROCESAMIENTO ---
-if picture:
+# Procesar la imagen
+if picture is not None and model:
     bytes_data = picture.getvalue()
-    img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+    image = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+    
+    # Detección con YOLO
+    with st.spinner("Detectando vehículos y placas..."):
+        results = model(image)
+        results.render()  # Dibuja los rectángulos
+    
+    # Mostrar imagen con detecciones
+    st.image(results.ims[0][:, :, ::-1], caption="Vehículos detectados", use_container_width=True)
+    
+    # Extraer regiones y aplicar OCR
+    st.markdown("### 🔍 Resultados del reconocimiento")
+    df_data = []
+    
+    try:
+        for *box, conf_score, cls in results.xyxy[0]:
+            label = model.names[int(cls)]
+            if label in ["car", "truck", "bus", "motorbike"]:
+                x1, y1, x2, y2 = map(int, box)
+                crop = image[y1:y2, x1:x2]
+                
+                # OCR en la región
+                ocr_results = reader.readtext(crop)
+                
+                for (bbox, text, prob) in ocr_results:
+                    if len(text) >= 4:  # Filtrar textos cortos
+                        df_data.append({
+                            "Vehículo": label,
+                            "Texto detectado": text,
+                            "Confianza OCR": round(prob, 2)
+                        })
+        
+        if df_data:
+            df = pd.DataFrame(df_data)
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.warning("No se detectaron placas legibles en la imagen.")
+    
+    except Exception as e:
+        st.error(f"Error en el reconocimiento OCR: {str(e)}")
 
-    st.image(img, caption="Imagen cargada", use_container_width=True)
-
-    with st.spinner("Analizando imagen y buscando placa..."):
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        results = reader.readtext(gray)
-
-    # --- FILTRAR RESULTADOS POSIBLES DE PLACA ---
-    posibles_placas = []
-    for (bbox, text, prob) in results:
-        if 5 <= len(text) <= 10 and any(char.isdigit() for char in text):  # Placas suelen tener entre 5–10 caracteres
-            posibles_placas.append((text, prob))
-
-    st.markdown("### 🧾 Resultado del reconocimiento")
-    if posibles_placas:
-        best_plate = max(posibles_placas, key=lambda x: x[1])
-        st.success(f"Placa detectada: **{best_plate[0]}** (Confianza: {best_plate[1]:.2f})")
-    else:
-        st.warning("No se detectó ninguna placa con suficiente confianza. Intenta otra imagen o un mejor ángulo.")
-
-# --- PIE DE PÁGINA ---
+# Pie de página
 st.markdown("---")
 st.caption("""
-**Analizador de Placas – Reconocimiento Automático de Matrículas (LPR)**  
-Desarrollado con Streamlit, OpenCV y EasyOCR. Ideal para proyectos de control vehicular o investigación en visión artificial.
+**Desarrollado por:** Sistema de Reconocimiento de Placas Vehiculares  
+Basado en YOLOv5 + EasyOCR + Streamlit
 """)
+
