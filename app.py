@@ -1,107 +1,178 @@
-import streamlit as st
 import cv2
+import streamlit as st
 import numpy as np
 import pandas as pd
 import torch
 import os
 import sys
 
-# Instalar EasyOCR automáticamente si no está presente
-os.system("pip install easyocr==1.7.1 torch torchvision --quiet")
-
-import easyocr
-
-# Configuración de la página
+# Configuración de página Streamlit
 st.set_page_config(
-    page_title="Reconocimiento de Placas Vehiculares",
-    page_icon="🚗",
+    page_title="Detección de Objetos en Tiempo Real",
+    page_icon="🔍",
     layout="wide"
 )
 
-st.title("🚗 Reconocimiento de Placas Vehiculares")
-st.markdown("""
-Esta aplicación utiliza **YOLOv5** para detectar vehículos y **EasyOCR** para reconocer texto en las placas.  
-Puedes capturar una imagen con tu cámara o subir una foto de un automóvil.
-""")
-
-# Cargar modelo YOLOv5
+# Función para cargar el modelo YOLOv5 de manera compatible con versiones anteriores de PyTorch
 @st.cache_resource
-def load_yolov5_model():
+def load_yolov5_model(model_path='yolov5s.pt'):
     try:
+        # Importar yolov5
         import yolov5
-        model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True)
-        return model
+        
+        # Para versiones de PyTorch anteriores a 2.0, cargar directamente con weights_only=False
+        # o usar el parámetro map_location para asegurar compatibilidad
+        try:
+            # Primer método: cargar con weights_only=False si la versión lo soporta
+            model = yolov5.load(model_path, weights_only=False)
+            return model
+        except TypeError:
+            # Segundo método: si el primer método falla, intentar un enfoque más básico
+            try:
+                model = yolov5.load(model_path)
+                return model
+            except Exception as e:
+                # Si todo falla, intentar cargar el modelo con torch directamente
+                st.warning(f"Intentando método alternativo de carga...")
+                
+                # Modificar sys.path temporalmente para poder importar torch correctamente
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                if current_dir not in sys.path:
+                    sys.path.append(current_dir)
+                
+                # Cargar el modelo con torch directamente
+                device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True)
+                return model
+    
     except Exception as e:
-        st.error(f"Error al cargar YOLOv5: {str(e)}")
+        st.error(f"❌ Error al cargar el modelo: {str(e)}")
+        st.info("""
+        Recomendaciones:
+        1. Instalar una versión compatible de PyTorch y YOLOv5:
+           ```
+           pip install torch==1.12.0 torchvision==0.13.0
+           pip install yolov5==7.0.9
+           ```
+        2. Asegúrate de tener el archivo del modelo en la ubicación correcta
+        3. Si el problema persiste, intenta descargar el modelo directamente de torch hub
+        """)
         return None
 
+# Título y descripción de la aplicación
+st.title("🔍 Detección de Objetos en Imágenes")
+st.markdown("""
+Esta aplicación utiliza YOLOv5 para detectar objetos en imágenes capturadas con tu cámara.
+Ajusta los parámetros en la barra lateral para personalizar la detección.
+""")
+
+# Cargar el modelo
 with st.spinner("Cargando modelo YOLOv5..."):
     model = load_yolov5_model()
 
-# Cargar OCR
-reader = easyocr.Reader(['en'])
-
-st.sidebar.title("⚙️ Configuración de detección")
-conf = st.sidebar.slider("Nivel de confianza mínimo", 0.0, 1.0, 0.25, 0.01)
-iou = st.sidebar.slider("Umbral IoU", 0.0, 1.0, 0.45, 0.01)
-
-st.sidebar.markdown("---")
-upload_option = st.sidebar.radio("📸 Fuente de imagen", ["Usar cámara", "Subir imagen"])
-
-# Captura o carga de imagen
-if upload_option == "Usar cámara":
-    picture = st.camera_input("Captura una foto del vehículo")
-else:
-    picture = st.file_uploader("Sube una imagen del vehículo", type=["jpg", "jpeg", "png"])
-
-# Procesar la imagen
-if picture is not None and model:
-    bytes_data = picture.getvalue()
-    image = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+# Si el modelo se cargó correctamente, configuramos los parámetros
+if model:
+    # Sidebar para los parámetros de configuración
+    st.sidebar.title("Parámetros")
     
-    # Detección con YOLO
-    with st.spinner("Detectando vehículos y placas..."):
-        results = model(image)
-        results.render()  # Dibuja los rectángulos
-    
-    # Mostrar imagen con detecciones
-    st.image(results.ims[0][:, :, ::-1], caption="Vehículos detectados", use_container_width=True)
-    
-    # Extraer regiones y aplicar OCR
-    st.markdown("### 🔍 Resultados del reconocimiento")
-    df_data = []
-    
-    try:
-        for *box, conf_score, cls in results.xyxy[0]:
-            label = model.names[int(cls)]
-            if label in ["car", "truck", "bus", "motorbike"]:
-                x1, y1, x2, y2 = map(int, box)
-                crop = image[y1:y2, x1:x2]
-                
-                # OCR en la región
-                ocr_results = reader.readtext(crop)
-                
-                for (bbox, text, prob) in ocr_results:
-                    if len(text) >= 4:  # Filtrar textos cortos
-                        df_data.append({
-                            "Vehículo": label,
-                            "Texto detectado": text,
-                            "Confianza OCR": round(prob, 2)
-                        })
+    # Ajustar parámetros del modelo
+    with st.sidebar:
+        st.subheader('Configuración de detección')
+        model.conf = st.slider('Confianza mínima', 0.0, 1.0, 0.25, 0.01)
+        model.iou = st.slider('Umbral IoU', 0.0, 1.0, 0.45, 0.01)
+        st.caption(f"Confianza: {model.conf:.2f} | IoU: {model.iou:.2f}")
         
-        if df_data:
-            df = pd.DataFrame(df_data)
-            st.dataframe(df, use_container_width=True)
-        else:
-            st.warning("No se detectaron placas legibles en la imagen.")
+        # Opciones adicionales
+        st.subheader('Opciones avanzadas')
+        try:
+            model.agnostic = st.checkbox('NMS class-agnostic', False)
+            model.multi_label = st.checkbox('Múltiples etiquetas por caja', False)
+            model.max_det = st.number_input('Detecciones máximas', 10, 2000, 1000, 10)
+        except:
+            st.warning("Algunas opciones avanzadas no están disponibles con esta configuración")
     
-    except Exception as e:
-        st.error(f"Error en el reconocimiento OCR: {str(e)}")
+    # Contenedor principal para la cámara y resultados
+    main_container = st.container()
+    
+    with main_container:
+        # Capturar foto con la cámara
+        picture = st.camera_input("Capturar imagen", key="camera")
+        
+        if picture:
+            # Procesar la imagen capturada
+            bytes_data = picture.getvalue()
+            cv2_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+            
+            # Realizar la detección
+            with st.spinner("Detectando objetos..."):
+                try:
+                    results = model(cv2_img)
+                except Exception as e:
+                    st.error(f"Error durante la detección: {str(e)}")
+                    st.stop()
+            
+            # Parsear resultados
+            try:
+                predictions = results.pred[0]
+                boxes = predictions[:, :4]
+                scores = predictions[:, 4]
+                categories = predictions[:, 5]
+                
+                # Mostrar resultados
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.subheader("Imagen con detecciones")
+                    # Renderizar las detecciones
+                    results.render()
+                    # Mostrar imagen con las detecciones
+                    st.image(cv2_img, channels='BGR', use_container_width=True)
+                
+                with col2:
+                    st.subheader("Objetos detectados")
+                    
+                    # Obtener nombres de etiquetas
+                    label_names = model.names
+                    
+                    # Contar categorías
+                    category_count = {}
+                    for category in categories:
+                        category_idx = int(category.item()) if hasattr(category, 'item') else int(category)
+                        if category_idx in category_count:
+                            category_count[category_idx] += 1
+                        else:
+                            category_count[category_idx] = 1
+                    
+                    # Crear dataframe para mostrar resultados
+                    data = []
+                    for category, count in category_count.items():
+                        label = label_names[category]
+                        confidence = scores[categories == category].mean().item() if len(scores) > 0 else 0
+                        data.append({
+                            "Categoría": label,
+                            "Cantidad": count,
+                            "Confianza promedio": f"{confidence:.2f}"
+                        })
+                    
+                    if data:
+                        df = pd.DataFrame(data)
+                        st.dataframe(df, use_container_width=True)
+                        
+                        # Mostrar gráfico de barras
+                        st.bar_chart(df.set_index('Categoría')['Cantidad'])
+                    else:
+                        st.info("No se detectaron objetos con los parámetros actuales.")
+                        st.caption("Prueba a reducir el umbral de confianza en la barra lateral.")
+            except Exception as e:
+                st.error(f"Error al procesar los resultados: {str(e)}")
+                st.stop()
+else:
+    st.error("No se pudo cargar el modelo. Por favor verifica las dependencias e inténtalo nuevamente.")
+    st.stop()
 
-# Pie de página
+# Información adicional y pie de página
 st.markdown("---")
 st.caption("""
-**Desarrollado por:** Sistema de Reconocimiento de Placas Vehiculares  
-Basado en YOLOv5 + EasyOCR + Streamlit
+**Acerca de la aplicación**: Esta aplicación utiliza YOLOv5 para detección de objetos en tiempo real.
+Desarrollada con Streamlit y PyTorch.
 """)
-
