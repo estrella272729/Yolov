@@ -175,4 +175,4 @@ st.markdown("---")
 st.caption("""
 **Acerca de la aplicación**: Esta aplicación utiliza YOLOv5 para detección de objetos en tiempo real.
 Desarrollada con Streamlit y PyTorch.
-""")
+""") 
