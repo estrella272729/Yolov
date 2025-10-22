@@ -33,7 +33,7 @@ h3, h2 {
 """, unsafe_allow_html=True)
 
 # Título y descripción de la aplicación
-st.title("🕵️‍♂️ Sistema de Reconocimiento Facial - Agencia Secreta")
+st.title(" Sistema de Reconocimiento Facial - Agencia Secreta")
 st.markdown("""
 Bienvenido, **agente**.  
 Este sistema clasificado de la Agencia analiza rostros y detecta individuos en tiempo real.  
@@ -66,7 +66,7 @@ with st.spinner("Inicializando sistema de visión artificial..."):
 
 # Parámetros del sistema
 if model:
-    st.sidebar.title("🎛️ Panel de Control - Clasificación de Objetivos")
+    st.sidebar.title(" Panel de Control - Clasificación de Objetivos")
     st.sidebar.markdown("Ajusta los parámetros de detección del sistema.")
     
     model.conf = st.sidebar.slider('Nivel de confianza mínimo', 0.0, 1.0, 0.25, 0.01)
@@ -88,7 +88,7 @@ if model:
         bytes_data = picture.getvalue()
         frame = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
 
-        with st.spinner("Analizando rostros... 🔍"):
+        with st.spinner("Analizando rostros... "):
             try:
                 results = model(frame)
             except Exception as e:
@@ -102,7 +102,7 @@ if model:
 
         col1, col2 = st.columns(2)
         with col1:
-            st.subheader("🧠 Imagen Procesada - Clasificación Visual")
+            st.subheader(" Imagen Procesada - Clasificación Visual")
             results.render()
             st.image(results.ims[0][:, :, ::-1], use_container_width=True)
 
